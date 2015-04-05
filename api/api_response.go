@@ -1,31 +1,42 @@
 package main
 
 import (
-	"./log"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	//"net/http"
 	"strings"
+	"time"
 )
 
 const (
 	CLIENT_BUILD   = 96
+	CLIENT_VERSION = "1.2.5"
 	CLIENT_API_URL = "http://rpc.hentaiathome.net/clientapi.php?"
 
 	CLIENT_KEY_LENGTH = 20
 )
 
-func (api *API) URL(act, add string) string {
+func (api *API) ServerTime() int64 {
+	t := time.Now().Add(api.serverTimeDelta)
+	return t.Unix() //*1000 + t.Nanosecond()/(1000*1000)
+}
+func (api *API) SetServerTime(unix int64) {
+	api.serverTimeDelta = time.Unix(unix, 0).Sub(time.Now())
+	log.Debugf("Setting altered: serverTimeDelta=%s", api.serverTimeDelta)
+}
+
+func (api *API) URL(act, add string) (ret string) {
+	defer func() { log.Debug(ret) }()
 	if act == ACT_SERVER_STAT {
-		return CLIENT_API_URL + fmt.Sprintf("clientbuild=%s&act=%s", CLIENT_BUILD, act)
+		return CLIENT_API_URL + fmt.Sprintf("clientbuild=%d&act=%s", CLIENT_BUILD, act)
 	}
 
-	correctedTime := Settings.getServerTime()
+	correctedTime := api.ServerTime()
 	actkey := fmt.Sprintf("hentai@home-%s-%s-%d-%d-%s",
 		act, add, api.Id, correctedTime, api.Key)
 	href := fmt.Sprintf("clientbuild=%d&act=%s&add=%s&cid=%d&acttime=%d&actkey=%s",
-		CLIENT_BUILD, act, add, api.Id, correctedTime, actkey)
+		CLIENT_BUILD, act, add, api.Id, correctedTime, SHA(actkey))
 
 	return CLIENT_API_URL + href
 }
@@ -37,6 +48,7 @@ func (api *API) Get(url string) (resp APIResponse, err error) {
 func (api *API) _Get(url, retryAct string, retryHandler *API) (resp APIResponse, err error) {
 	r, err := api.Client.Get(url)
 	if err != nil {
+		log.Error("xx", url)
 		return
 	}
 	defer r.Body.Close()

@@ -2,7 +2,6 @@ package main
 
 import (
 	"./cache"
-	"./log"
 	"fmt"
 	"net/url"
 	"regexp"

@@ -1,7 +1,8 @@
+// +build ignore
+
 package main
 
 import (
-	"./log"
 	"errors"
 	"time"
 )
@@ -14,8 +15,8 @@ var (
 	FAIL_RESET_SUSPENDED        = errors.New("FAIL_RESET_SUSPENDED")
 )
 
-func (api *API) notifyStart() (err error) {
-	resp, err := api.Get(ACT_CLIENT_START /*, this*/)
+func (api *API) Start() (err error) {
+	err = api.notifiySimple(ACT_CLIENT_START, "Start")
 	if err == nil {
 		log.Info("Start notification successful. Note that there may be a short wait before the server registers this client on the network.")
 		return nil
@@ -31,13 +32,13 @@ func (api *API) notifyStart() (err error) {
 			log.Error(err)
 			return err
 		case err.Is("FAIL_CONNECT_TEST"):
-			log.Infof(FAIL_CONNECT_TEST_msg, Settings.getClientPort(), Settings.getClientHost())
+			//log.Infof(FAIL_CONNECT_TEST_msg, Settings.getClientPort(), Settings.getClientHost())
 			return FAIL_CONNECT_TEST
 
 		case err.Is("FAIL_STARTUP_FLOOD"):
 			log.Info(FAIL_STARTUP_FLOOD_msg)
 			time.Sleep(90 * time.Second)
-			return api.notifyStart()
+			return api.Start()
 
 		case err.Is("FAIL_OTHER_CLIENT_CONNECTED"):
 			log.Info(FAIL_OTHER_CLIENT_CONNECTED_msg)
