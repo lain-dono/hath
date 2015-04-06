@@ -1,20 +1,46 @@
+// +build ignore
 package cache
 
 import (
 	log "../log"
 	"database/sql"
+	_ "github.com/mattn/go-sqlite3"
+	"time"
 )
+
+const (
+	CLEAN_SHUTDOWN_KEY   = "clean_shutdown"
+	CLEAN_SHUTDOWN_VALUE = "clean_r81"
+)
+
+type CachedFile struct {
+	Id      Id
+	Lasthit time.Time
+	Size    int64
+	Active  bool
+}
 
 type DB struct {
 	//isForceDirty bool
 
-	sqlite *sql.DB
+	*sql.DB
 
-	cacheIndexClearActive, cacheIndexCountStats                                 *sql.Stmt
-	queryCachelistSegment, queryCachedFileLasthit, queryCachedFileSortOnLasthit *sql.Stmt
-	insertCachedFile, updateCachedFileLasthit, updateCachedFileActive           *sql.Stmt
-	deleteCachedFile, deleteCachedFileInactive                                  *sql.Stmt
-	getStringVar, setStringVar                                                  *sql.Stmt
+	cacheIndexClearActive, cacheIndexCountStats                       *sql.Stmt
+	queryCachelistSegment                                             *sql.Stmt
+	queryCachedFileLasthit, queryCachedFileSortOnLasthit              *sql.Stmt
+	insertCachedFile, updateCachedFileLasthit, updateCachedFileActive *sql.Stmt
+	deleteCachedFile, deleteCachedFileInactive                        *sql.Stmt
+	getStringVar, setStringVar                                        *sql.Stmt
+
+	staticRanges map[string]bool
+}
+
+func (h *DB) SetStaticRanges(ranges map[string]bool) {
+	h.staticRanges = ranges
+}
+func (h *DB) IsStaticRanges(fileid string) (ok bool) {
+	_, ok = h.staticRanges[fileid[0:4]]
+	return
 }
 
 func (h *DB) check(err error) {
@@ -25,131 +51,263 @@ func (h *DB) check(err error) {
 	}
 }
 
-func NewDB(db string) (h *DB, err error) {
-	h = &DB{}
+func (h *DB) mustPrepare(q string) (stmt *sql.Stmt) {
+	stmt, err := h.Prepare(q)
+	if err != nil {
+		panic(err)
+	}
+	return
+}
+func (h *DB) mustExec(q string) {
+	_, err := h.Exec(q)
+	if err != nil {
+		panic(err)
+	}
+}
 
-	log.Info("CacheHandler: Loading database from " + db)
+func NewDB(db string) (h *DB) {
+	h = &DB{
+		staticRanges: make(map[string]bool),
+	}
+	//log.Info("CacheHandler: Loading database from " + db)
 
 	sqlite, err := sql.Open("sqlite3", db)
 	if err != nil {
-		return
+		panic(err)
 	}
-	// defer db.Close()
+	h.DB = sqlite
 
-	h.sqlite = sqlite
+	//log.Info("CacheHandler: Initializing database tables...")
 
-	//try {
+	h.initTables()
+	h.initStmt()
 
-	//Class.forName("org.sqlite.JDBC");
-	//sqlite = DriverManager.getConnection("jdbc:sqlite:" + db);
-	//DatabaseMetaData dma = sqlite.getMetaData();
-	//Out.info("CacheHandler: Using " + dma.getDatabaseProductName() + " " + dma.getDatabaseProductVersion() + " over " + dma.getDriverName() + " " + dma.getJDBCMajorVersion() + "." + dma.getJDBCMinorVersion() + " running in " + dma.getDriverVersion() + " mode");
+	//log.Info("Updating database schema to r81...")
+	err = h.initPre81() // TODO maybe ignore it
+	if err != nil {
+		panic(err)
+	}
+	//log.Info("Database updates complete")
 
-	log.Info("CacheHandler: Initializing database tables...")
-	//Statement stmt = sqlite.createStatement();
-	sqlite.Exec(`CREATE TABLE IF NOT EXISTS CacheList (
+	return
+}
+
+func (h *DB) initTables() {
+	h.mustExec(`CREATE TABLE IF NOT EXISTS CacheList (
 		fileid VARCHAR(65) NOT NULL,
 		lasthit INT UNSIGNED NOT NULL,
 		filesize INT UNSIGNED NOT NULL,
 		active BOOLEAN NOT NULL,
 		PRIMARY KEY(fileid)
 	);`)
-	sqlite.Exec("CREATE INDEX IF NOT EXISTS Lasthit ON CacheList (lasthit DESC);")
-	sqlite.Exec(`CREATE TABLE IF NOT EXISTS StringVars (
+	h.mustExec("CREATE INDEX IF NOT EXISTS Lasthit ON CacheList (lasthit DESC);")
+	h.mustExec(`CREATE TABLE IF NOT EXISTS StringVars (
 		k VARCHAR(255) NOT NULL,
 		v VARCHAR(255) NOT NULL,
 		PRIMARY KEY(k)
 	);`)
+}
 
-	h.cacheIndexClearActive, _ = sqlite.Prepare("UPDATE CacheList SET active=0;")
-	h.cacheIndexCountStats, _ = sqlite.Prepare("SELECT COUNT(*), SUM(filesize) FROM CacheList;")
-	h.queryCachelistSegment, _ = sqlite.Prepare("SELECT fileid FROM CacheList WHERE fileid BETWEEN ? AND ?;")
-	h.queryCachedFileLasthit, _ = sqlite.Prepare("SELECT lasthit FROM CacheList WHERE fileid=?;")
-	h.queryCachedFileSortOnLasthit, _ = sqlite.Prepare(`SELECT fileid, lasthit, filesize
-		FROM CacheList ORDER BY lasthit LIMIT ?, ?;`)
-	h.insertCachedFile, _ = sqlite.Prepare(`INSERT OR REPLACE INTO CacheList
+func (h *DB) initStmt() {
+	h.cacheIndexClearActive = h.mustPrepare("UPDATE CacheList SET active=0;")
+	h.cacheIndexCountStats = h.mustPrepare("SELECT COUNT(*), SUM(filesize) FROM CacheList;")
+	h.queryCachelistSegment = h.mustPrepare("SELECT fileid FROM CacheList WHERE fileid BETWEEN ? AND ?;")
+	h.queryCachedFileLasthit = h.mustPrepare("SELECT lasthit FROM CacheList WHERE fileid=?;")
+	h.queryCachedFileSortOnLasthit = h.mustPrepare(`SELECT fileid, lasthit, filesize, active
+		FROM CacheList ORDER BY lasthit LIMIT ?, ?;`) // FIXME remove active
+	h.insertCachedFile = h.mustPrepare(`INSERT OR REPLACE INTO CacheList
 		(fileid, lasthit, filesize, active) VALUES (?, ?, ?, 1);`)
-	h.updateCachedFileActive, _ = sqlite.Prepare("UPDATE CacheList SET active=1 WHERE fileid=?;")
-	h.updateCachedFileLasthit, _ = sqlite.Prepare("UPDATE CacheList SET lasthit=? WHERE fileid=?;")
-	h.deleteCachedFile, _ = sqlite.Prepare("DELETE FROM CacheList WHERE fileid=?;")
-	h.deleteCachedFileInactive, _ = sqlite.Prepare("DELETE FROM CacheList WHERE active=0;")
-	h.setStringVar, _ = sqlite.Prepare("INSERT OR REPLACE INTO StringVars (k, v) VALUES (?, ?);")
-	h.getStringVar, _ = sqlite.Prepare("SELECT v FROM StringVars WHERE k=?;")
+	h.updateCachedFileActive = h.mustPrepare("UPDATE CacheList SET active=1 WHERE fileid=?;")
+	h.updateCachedFileLasthit = h.mustPrepare("UPDATE CacheList SET lasthit=? WHERE fileid=?;")
+	h.deleteCachedFile = h.mustPrepare("DELETE FROM CacheList WHERE fileid=?;")
+	h.deleteCachedFileInactive = h.mustPrepare("DELETE FROM CacheList WHERE active=0;")
+	h.setStringVar = h.mustPrepare("INSERT OR REPLACE INTO StringVars (k, v) VALUES (?, ?);")
+	h.getStringVar = h.mustPrepare("SELECT v FROM StringVars WHERE k=?;")
+}
 
-	//try {
-	// convert and clear pre-r81 tablespace if present.
-	// this will trip an exception if the table doesn't exist and skip the rest of the conversion block
-	sqlite.Exec("UPDATE CacheIndex SET active=0;")
-
-	log.Info("Updating database schema to r81...")
-	hashtable := make(map[string]int64)
-	// TODO
-	//java.util.Hashtable<String, Long> hashtable = new java.util.Hashtable<String, Long>();
-	//ResultSet rs = stmt.executeQuery("SELECT fileid, lasthit FROM CacheIndex;");
-	//while(rs.next()) {
-	//hashtable.put(rs.getString(1), new Long(rs.getLong(2)));
-	//}
-	//rs.close();
-
-	//sqlite.setAutoCommit(false);
-
-	for fileid, value := range hashtable {
-		hvf, _ := NewHVFileFromId(fileid)
-		h.insertCachedFile.Exec(fileid, value, hvf.Size())
+// convert and clear pre-r81 tablespace if present.
+// this will trip an exception if the table doesn't exist and skip the rest of the conversion block
+func (h *DB) initPre81() (err error) {
+	var exists int
+	err = h.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='CacheIndex';").Scan(&exists)
+	if err != nil || exists == 0 {
+		return
 	}
 
-	//sqlite.setAutoCommit(true)
+	_, err = h.Exec("UPDATE CacheIndex SET active=0;")
+	if err != nil {
+		return
+	}
 
-	sqlite.Exec("DROP TABLE CacheIndex;")
+	rows, err := h.Query("SELECT fileid, lasthit FROM CacheIndex;")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
 
-	log.Info("Database updates complete")
-	//}
-	//catch(Exception e) {}
-	return
+	var fileid string
+	var lasthit int64
+	for rows.Next() {
+		err = rows.Scan(&fileid, &lasthit)
+		if err != nil {
+			return
+		}
 
+		id := mustId(fileid)
+		err = h.InsertCachedFile(id, time.Unix(lasthit, 0))
+		if err != nil {
+			return
+		}
+	}
+
+	err = rows.Err()
+	if err != nil {
+		return
+	}
+
+	_, err = h.Exec("DROP TABLE CacheIndex;")
 	return
 }
 
-func (h *DB) optimize() {
-	log.Info("CacheHandler: Optimizing database...")
-	h.sqlite.Exec("VACUUM;")
+func (h *DB) Optimize() {
+	//log.Info("CacheHandler: Optimizing database...")
+	h.mustExec("VACUUM;")
 }
 
-func (h *DB) terminate() {
-	if h.sqlite != nil {
+func (h *DB) Terminate() {
+	if h.DB != nil {
 		h.setStringVar.Exec(CLEAN_SHUTDOWN_KEY, CLEAN_SHUTDOWN_VALUE)
-		h.sqlite.Close()
-		h.sqlite = nil
+		h.DB.Close()
+		h.DB = nil
 	}
 }
 
-func (h *DB) CleanShutdown() (val string, err error) {
-	defer func() { h.check(err) }()
-	err = h.getStringVar.QueryRow(CLEAN_SHUTDOWN_KEY).Scan(&val)
-	if err == sql.ErrNoRows {
-		err = nil
+// ------------------------------
+
+func (h *DB) ClearActive() (n int64, err error) {
+	res, err := h.cacheIndexClearActive.Exec()
+	if err != nil {
+		return
 	}
+	n, err = res.RowsAffected()
 	return
 }
-
-func (h *DB) SetCleanShutdown(val interface{}) (err error) {
-	defer func() { h.check(err) }()
-	_, err = h.setStringVar.Exec(CLEAN_SHUTDOWN_KEY, val)
+func (h *DB) Activate(id Id) (err error) {
+	_, err = h.updateCachedFileActive.Exec(id.String())
 	return
 }
-
-func (h *DB) InsertCachedFile(lasthit int64, hvFile *HVFile) (err error) {
-	defer func() { h.check(err) }()
-	_, err = h.insertCachedFile.Exec(hvFile.Id(), lasthit, hvFile.Size())
+func (h *DB) SetLastHit(id Id, t time.Time) (err error) {
+	nix := t.Unix()
+	_, err = h.updateCachedFileLasthit.Exec(nix, id.String())
 	return
 }
 
 func (h *DB) CountStats() (count int, size int64, err error) {
-	defer func() { h.check(err) }()
 	err = h.cacheIndexCountStats.QueryRow().Scan(&count, &size)
-	/*if err == sql.ErrNoRows {
-		err = nil
-	}*/
+	return
+}
+func (h *DB) LastHit(id Id) (t time.Time, err error) {
+	var val int64
+	err = h.queryCachedFileLasthit.QueryRow(id.String()).Scan(&val)
+	t = time.Unix(val, 0)
+	return
+}
+func (h *DB) Segment(from, to string) (ids []Id, err error) {
+	rows, err := h.queryCachelistSegment.Query(from, to)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fileid string
+		err = rows.Scan(&fileid)
+		if err != nil {
+			return
+		}
+
+		if !h.IsStaticRanges(fileid) {
+			ids = append(ids, mustId(fileid))
+		}
+	}
+	err = rows.Err()
+	return
+}
+
+func (h *DB) CachedFileSortOnLasthit(from, count int) (files []CachedFile, err error) {
+	rows, err := h.queryCachedFileSortOnLasthit.Query(from, count)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fileid string
+		var lasthit, filesize int64
+		var active bool
+
+		/*
+			err = h.queryCachedFileSortOnLasthit.QueryRow(id.String()).Scan(&fileid, &lasthit, &filesize, &active)
+			if err != nil {
+				return
+			}
+		*/
+
+		err = rows.Scan(&fileid, &lasthit, &filesize, &active)
+		if err != nil {
+			return
+		}
+		file := CachedFile{
+			Id:      mustId(fileid),
+			Lasthit: time.Unix(lasthit, 0),
+			Size:    filesize,
+			Active:  active,
+		}
+
+		files = append(files, file)
+	}
+	err = rows.Err()
+
+	return
+}
+
+func (h *DB) InsertCachedFile(id Id, lasthit time.Time) (err error) {
+	_, err = h.insertCachedFile.Exec(id.String(), lasthit.Unix(), id.Size())
+	return
+}
+
+func (h *DB) Remove(id Id) (err error) {
+	_, err = h.deleteCachedFile.Exec(id.String())
+	return
+}
+func (h *DB) RemoveInactive() (n int64, err error) {
+	res, err := h.deleteCachedFileInactive.Exec()
+	if err != nil {
+		return
+	}
+	n, err = res.RowsAffected()
+	return
+}
+
+// ------------------------------
+
+func (h *DB) CleanShutdown() (val string, err error) {
+	//defer func() { h.check(err) }()
+	err = h.getStringVar.QueryRow(CLEAN_SHUTDOWN_KEY).Scan(&val)
+	//if err == sql.ErrNoRows {
+	//err = nil
+	//}
+	return
+}
+
+func (h *DB) SetCleanShutdown(val interface{}) (err error) {
+	//defer func() { h.check(err) }()
+	_, err = h.setStringVar.Exec(CLEAN_SHUTDOWN_KEY, val)
+	return
+}
+
+/*
+func (h *DB) InsertCachedFile(lasthit int64, hvFile *HVFile) (err error) {
+	defer func() { h.check(err) }()
+	_, err = h.insertCachedFile.Exec(hvFile.Id(), lasthit, hvFile.Size())
 	return
 }
 
@@ -229,3 +387,4 @@ func (h *DB) UpdateCachedFileActive(id string) (affected int64, err error) {
 	affected, err = r.RowsAffected()
 	return
 }
+*/
