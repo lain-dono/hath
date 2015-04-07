@@ -1,8 +1,9 @@
-package main
+package api
 
 import (
-	"./cache"
+	"../cache"
 	"fmt"
+	"math/rand"
 	"net/url"
 	"regexp"
 	"strings"
@@ -42,12 +43,21 @@ func (api *API) downloadFilesFromServer(files map[string]string) (returnText str
 
 	return
 }
-func (api *API) doThreadedProxyTest(ipaddr string, port, testsize, testcount, testtime int, testkey int) string {
+func (api *API) doThreadedProxyTest(ipaddr string, port, count int, testsize, testtime int64, testkey int) string {
 	successfulTests := 0
 	totalTimeMillis := int64(0)
 
 	log.Debugf("Running threaded proxy test against ipaddr=%s port=%d testsize=%d testcount=%d testtime=%d testkey=%s",
-		ipaddr, port, testsize, testcount, testtime, testkey)
+		ipaddr, port, testsize, count, testtime, testkey)
+
+	for i := 0; i < count; i++ {
+		source := &url.URL{
+			Scheme: "http",
+			Host:   fmt.Sprintf("%s:%d", ipaddr, port),
+			Path:   fmt.Sprintf("/t/%d/%d/%d/%d", testsize, testtime, testkey, rand.Int()),
+		}
+		log.Debugf("Test thread: %s", source)
+	}
 
 	/*
 		try {
