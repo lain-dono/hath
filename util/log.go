@@ -1,8 +1,19 @@
-package log
+package util
 
 import (
-	log "github.com/Sirupsen/logrus"
+	"github.com/Sirupsen/logrus"
 )
+
+var log = logrus.New()
+
+func init() {
+	log.Level = logrus.DebugLevel
+	//log.Formatter = NewZalgoFormatterrrrrr()
+}
+
+func Logger() *logrus.Logger {
+	return log
+}
 
 /*
 const (
