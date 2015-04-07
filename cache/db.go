@@ -2,7 +2,7 @@
 package cache
 
 import (
-	log "../log"
+	log "../util"
 	"database/sql"
 	_ "github.com/mattn/go-sqlite3"
 	"time"

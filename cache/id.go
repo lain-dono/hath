@@ -1,9 +1,8 @@
 package cache
 
 import (
-	sha "crypto/sha1"
+	"../util"
 	"fmt"
-	"io"
 	"os"
 	"path"
 	"regexp"
@@ -111,15 +110,9 @@ func (h *Handler) CheckFile(id Id) (ok bool, err error) {
 		return
 	}
 
-	hasher := sha.New()
-	hasher.Reset()
-	_, err = io.Copy(hasher, f)
-	if err != nil {
-		return
-	}
-
-	sum := fmt.Sprintf("%x", hasher.Sum(nil))
-	return id.String() == sum, nil
+	sum, err := util.SHAreader(f)
+	ok = sum == id.Hash()
+	return
 }
 
 /*
